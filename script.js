@@ -97,7 +97,14 @@
     CF = null,
     SEL = {},
     QT = "",
-    tm;
+    tm,
+    USR = null,
+    RQ = "",
+    PID = 1;
+  try {
+    USR = JSON.parse(localStorage.getItem("leds-user"));
+    if (USR && USR.pid) PID = USR.pid;
+  } catch (e) {}
   try {
     const u = JSON.parse(localStorage.getItem(KU));
     if (u) {
@@ -169,6 +176,10 @@
       db.run(SEEDSQL);
       persist();
     }
+    db.run("UPDATE aluno SET email = replace(email, '@exemplo.ifes', '@ifes')");
+    db.run("UPDATE projeto SET nome = 'Portal do Aluno', descricao = 'Plataforma web de serviços acadêmicos do IFES' WHERE id = 1 AND nome = 'Projeto X'");
+    db.run("UPDATE projeto SET nome = 'Sistema de Estágios', descricao = 'Gestão de vagas e convênios de estágio' WHERE id = 2 AND nome = 'Outros projetos'");
+    persist();
     LOG = [];
   }
   const NV = () => q("SELECT * FROM nivel_proficiencia ORDER BY nivel");
@@ -187,15 +198,15 @@
     return v == 5 ? n.nome : n.nome + "+";
   };
   function data() {
-    const me = q("SELECT * FROM aluno WHERE id = 1")[0];
+    const me = q("SELECT * FROM aluno WHERE id = " + PID)[0];
     const mine = q(
-      "SELECT h.id, h.nome, h.categoria, k.nivel, k.pontos, k.tarefas FROM vw_nivel_kanban k JOIN habilidade h ON h.id = k.habilidade_id WHERE k.aluno_id = 1 ORDER BY h.id",
+      "SELECT h.id, h.nome, h.categoria, k.nivel, k.pontos, k.tarefas FROM vw_nivel_kanban k JOIN habilidade h ON h.id = k.habilidade_id WHERE k.aluno_id = " + PID + " ORDER BY h.id",
     );
     const src = q(
-      "SELECT habilidade_id h, fonte f, COUNT(*) n FROM tarefa WHERE aluno_id = 1 GROUP BY habilidade_id, fonte ORDER BY fonte",
+      "SELECT habilidade_id h, fonte f, COUNT(*) n FROM tarefa WHERE aluno_id = " + PID + " GROUP BY habilidade_id, fonte ORDER BY fonte",
     );
     const recent = q(
-      "SELECT t.fonte, t.titulo, t.complexidade c, t.data_conclusao d, h.nome hn FROM tarefa t JOIN habilidade h ON h.id = t.habilidade_id WHERE t.aluno_id = 1 ORDER BY t.data_conclusao DESC, t.id DESC LIMIT 5",
+      "SELECT t.fonte, t.titulo, t.complexidade c, t.data_conclusao d, h.nome hn FROM tarefa t JOIN habilidade h ON h.id = t.habilidade_id WHERE t.aluno_id = " + PID + " ORDER BY t.data_conclusao DESC, t.id DESC LIMIT 5",
     );
     const ov = q("SELECT * FROM vw_ocupacao_aluno");
     const sk = q(
@@ -253,8 +264,32 @@ ORDER BY o.taxa_ocupacao_pct ASC,
     );
   };
   const hr = (c) => Math.max(1, Math.min(SEL[c.id] || 10, Math.max(1, c.hl)));
-  const logHtml = () =>
-    `<details class="sql" style="margin-top:16px"><summary>Registro SQL executado (${LOG.length})</summary><pre>${LOG.length ? esc(LOG.join("\n")) : "-- nenhuma alteração ainda"}</pre></details><button class="rst" onclick="A.reset()">Restaurar dados iniciais do SQL</button>`;
+  const logHtml = () => "";
+  const PN = () => (q("SELECT nome FROM projeto WHERE id = 1")[0] || { nome: "projeto" }).nome;
+  const KB = () => {
+    try {
+      return JSON.parse(localStorage.getItem("leds-kanban-" + PID));
+    } catch (e) {
+      return null;
+    }
+  };
+  function downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+  }
+  function csv(head, rows, name) {
+    const c = (v) => '"' + String(v == null ? "" : v).replace(/"/g, '""') + '"';
+    const t = [head].concat(rows).map((r) => r.map(c).join(";")).join("\r\n");
+    downloadBlob(new Blob(["\ufeff" + t], { type: "text/csv;charset=utf-8" }), name + "-" + today() + ".csv");
+    toast("Relatório exportado");
+  }
+  let EXP = null;
   function kanbanHtml(D, nv) {
     const rule = nv
       .slice(1)
@@ -269,16 +304,20 @@ ORDER BY o.taxa_ocupacao_pct ASC,
           .join("")
       : '<div class="sub" style="margin-top:10px">Nenhuma tarefa importada ainda.</div>';
     const form = D.mine.length
-      ? `<div class="kbf"><div class="fld"><label for="kb-f">Ferramenta</label><select id="kb-f" class="q">${FONTES.map((f) => `<option>${f}</option>`).join("")}</select></div><div class="fld"><label for="kb-h">Habilidade</label><select id="kb-h" class="q">${D.mine.map((m) => `<option value="${m.id}">${esc(m.nome)}</option>`).join("")}</select></div><div class="fld"><label for="kb-c">Complexidade (pts)</label><select id="kb-c" class="q">${CPX.map((c) => `<option value="${c}"${c == 3 ? " selected" : ""}>${c} pts</option>`).join("")}</select></div><div class="fld kbt"><label for="kb-t">Tarefa concluída</label><input id="kb-t" class="q" placeholder="Ex.: Issue #42 – API de login"></div></div><button class="btn p" style="margin-top:12px" onclick="A.imp()">Importar tarefa concluída</button>`
-      : '<div class="sub" style="margin-top:12px">Adicione uma habilidade no catálogo para importar tarefas.</div>';
-    return `<div class="card"><div class="between"><b style="font-size:15px">Integração com kanban</b><span class="sub">GitHub · Trello · Jira</span></div><div class="sub" style="margin:4px 0 0">O nível não é mais autodeclarado: é calculado pela complexidade das tarefas concluídas.</div><div class="sub" style="margin-top:4px">${rule}</div><div class="sub" style="margin-top:4px">Simulação: as tarefas são registradas no banco local, sem chamada real às APIs.</div>${form}<div style="margin-top:14px"><b style="font-size:14px">Últimas tarefas concluídas</b>${rows}</div></div>`;
+      ? `<div class="kbf"><div class="fld"><label for="kb-f">Ferramenta</label><select id="kb-f" class="q">${FONTES.map((f) => `<option>${f}</option>`).join("")}</select></div><div class="fld"><label for="kb-h">Habilidade</label><select id="kb-h" class="q">${D.mine.map((m) => `<option value="${m.id}">${esc(m.nome)}</option>`).join("")}</select></div><div class="fld"><label for="kb-c">Complexidade (pts)</label><select id="kb-c" class="q">${CPX.map((c) => `<option value="${c}"${c == 3 ? " selected" : ""}>${c} pts</option>`).join("")}</select></div><div class="fld kbt"><label for="kb-t">Tarefa concluída</label><input id="kb-t" class="q" placeholder="Ex.: Issue #42 – API de login"></div></div><button class="btn p" style="margin-top:12px" onclick="A.imp()">Registrar tarefa concluída</button>`
+      : '<div class="sub" style="margin-top:12px">Adicione uma habilidade no catálogo para registrar tarefas.</div>';
+    const kb = KB();
+    const con = kb
+      ? `<div class="between kbc"><span><span class="match">Conectado</span> <b>${esc(kb.f)}</b> <span class="sub">${esc(kb.u)}</span></span><button class="btn" onclick="A.kbx()">Desconectar</button></div>`
+      : `<div class="kbf"><div class="fld"><label for="kc-f">Ferramenta</label><select id="kc-f" class="q">${FONTES.map((f) => `<option>${f}</option>`).join("")}</select></div><div class="fld kbt"><label for="kc-u">Endereço do quadro ou repositório</label><input id="kc-u" class="q" type="url" placeholder="https://github.com/leds-ifes/portal"></div></div><button class="btn" style="margin-top:12px" onclick="A.kbc()">Conectar quadro</button>`;
+    return `<div class="card"><div class="between"><b style="font-size:15px">Integração com kanban</b><span class="sub">GitHub · Trello · Jira</span></div><div class="sub" style="margin:4px 0 0">Seu nível em cada habilidade é calculado pela complexidade das tarefas concluídas.</div><div class="sub" style="margin-top:4px">${rule}</div><div style="margin-top:12px">${con}</div>${form}<div style="margin-top:14px"><b style="font-size:14px">Últimas tarefas concluídas</b>${rows}</div></div>`;
   }
   function pProfile(D) {
     const me = D.me,
-      o = D.ov.find((x) => x.aluno_id == 1),
+      o = D.ov.find((x) => x.aluno_id == PID),
       nv = NV(),
       hb = HB();
-    const who = `<div class="who"><div class="av">${ini(me.nome)}</div><div><b>${esc(me.nome)}</b><div class="sub">${esc(me.curso)} · LEDS / IFES</div><div class="sub">${esc(me.email)}</div></div></div>`;
+    const who = `<div class="who"><div class="av">${ini(me.nome)}</div><div><b>${esc(me.nome)}</b><div class="sub">${esc(me.curso)} · LEDS / IFES</div><div class="sub">${esc(me.email)}</div>${USR.pid == me.id ? `<button class="btn" style="margin-top:10px" onclick="A.go('cf')">Configurações</button>` : ""}</div></div>`;
     const avail = `<div class="card"><div class="between"><b style="font-size:15px">Carga horária semanal</b><span class="big"><span class="hv">${me.carga_horaria_semanal}</span> h</span></div><input type="range" min="${Math.max(1, o.horas_alocadas)}" max="40" value="${me.carga_horaria_semanal}" aria-label="Carga horária semanal" oninput="A.hv(this.value)" onchange="A.h(this.value)"><div class="sub">${o.horas_alocadas} h alocadas · ${o.horas_livres} h livres (${String(o.taxa_ocupacao_pct).replace(".", ",")}% ocupado)</div><div class="sub" style="margin-top:4px">Perfil atualizado em ${fd(me.data_atualizacao_perfil)}</div></div>`;
     const sec = `<div class="sec"><span>Minhas habilidades</span><span>${D.mine.length} de ${hb.length}</span></div>`;
     const sk =
@@ -297,7 +336,7 @@ ORDER BY o.taxa_ocupacao_pct ASC,
       '<div class="card sub">Nenhuma habilidade cadastrada. Adicione pelo catálogo.</div>';
     const av = hb.filter((h) => !D.mine.some((x) => x.id == h.id));
     const cat = `<div class="card"><div class="between"><b style="font-size:15px">Catálogo de habilidades</b><span class="sub">${D.mine.length} de ${hb.length}</span></div><div class="sub" style="margin:4px 0 12px">${nv.map((n) => n.nivel + " " + n.nome).join(" · ")}</div>${av.length ? `<div class="chips">${av.map((h) => `<button class="chip" title="${h.categoria}" onclick="A.add(${h.id})">+ ${esc(h.nome)}</button>`).join("")}</div>` : '<div class="sub">Catálogo completo</div>'}</div>`;
-    return `<div class="pg"><div class="a-who">${who}</div><div class="a-av">${avail}</div><div class="a-sec">${sec}</div><div class="sk a-sk">${sk}</div><div class="a-cat">${cat}${kanbanHtml(D, nv)}</div><div class="a-save"><button class="btn" onclick="A.save()">Salvar perfil</button></div></div>`;
+    return `<div class="pg"><div class="a-who">${who}</div><div class="a-av">${avail}</div><div class="a-sec">${sec}</div><div class="sk a-sk">${sk}</div><div class="a-cat">${cat}${kanbanHtml(D, nv)}</div><div class="a-save"><button class="btn" onclick="A.save()">Salvar perfil</button> <button class="btn" onclick="A.hist()">Ver histórico</button></div></div>`;
   }
   const FD = () => ({
     tech: { l: "Tecnologia", o: HB().map((h) => [h.nome, h.nome]) },
@@ -388,8 +427,8 @@ ORDER BY o.taxa_ocupacao_pct ASC,
         const act = a
           ? `<div class="alrow"><button class="btn p ok" onclick="A.un(${c.id})">Alocado: ${a.horas_semanais} h ✓ (remover)</button></div>`
           : CF == c.id
-            ? `<div class="conf"><div class="sub">Alocar ${esc(nome1)} por ${h2} h no projeto X?</div><div class="alrow"><button class="btn p" onclick="A.ok(${c.id})">Confirmar</button><button class="btn" onclick="A.no()">Cancelar</button></div></div>`
-            : `<div class="alrow"><div class="step"><button aria-label="Menos horas" onclick="A.hrs(${c.id},-1)">−</button><span>${h2} h</span><button aria-label="Mais horas" onclick="A.hrs(${c.id},1)">+</button></div><button class="btn p" ${c.hl > 0 ? "" : "disabled"} onclick="A.ask(${c.id})">Alocar no projeto X</button></div>`;
+            ? `<div class="conf"><div class="sub">Alocar ${esc(nome1)} por ${h2} h em ${esc(PN())}?</div><div class="alrow"><button class="btn p" onclick="A.ok(${c.id})">Confirmar</button><button class="btn" onclick="A.no()">Cancelar</button></div></div>`
+            : `<div class="alrow"><div class="step"><button aria-label="Menos horas" onclick="A.hrs(${c.id},-1)">−</button><span>${h2} h</span><button aria-label="Mais horas" onclick="A.hrs(${c.id},1)">+</button></div><button class="btn p" ${c.hl > 0 ? "" : "disabled"} onclick="A.ask(${c.id})">Alocar em ${esc(PN())}</button></div>`;
         return `<article class="card${i == 0 && m == 100 ? " best" : ""}"><div class="between"><div class="item"><div class="av s">${ini(c.nome)}</div><div><b>${esc(c.nome)}</b><div class="sub">${esc(c.curso)}</div></div></div><span class="match${m < 100 ? " part" : ""}">${m}%</span></div><div class="tags">${c.sk.map((x) => `<span class="tag">${esc(x.n)} · ${x.l}/5</span>`).join("")}</div><div class="bar"><span>Livre</span><i><b style="width:${Math.max(0, Math.min(100, c.hl * 2.5))}%"></b></i><span>${c.hl} h</span></div><div class="sub" style="margin-top:6px">${c.ha} h alocadas · perfil de ${fd(c.dt)}</div>${act}</article>`;
       }).join("")
     );
@@ -401,50 +440,228 @@ ORDER BY o.taxa_ocupacao_pct ASC,
     } catch (e) {}
     const filled = D.al.length,
       total = D.req.reduce((t, r) => t + r.v, 0);
-    const rule = `<div class="sub">Match = filtros atendidos ÷ filtros ativos. Ordem: maior match, menor taxa de ocupação, maior nível e perfil mais recente.</div><div class="sub" style="margin-top:6px">Nível calculado pelas tarefas concluídas no kanban (GitHub, Trello ou Jira), ponderadas por complexidade.</div><div class="sub" style="margin-top:6px">Projeto X pede: ${D.req.map((r) => `${r.v} vaga${r.v > 1 ? "s" : ""} de ${esc(r.hn)} (${r.nn}+, ${r.h} h/sem)`).join("; ")}.</div><details class="sql" style="margin-top:10px"><summary>Ver consulta SQL (${strict.length} linha${strict.length == 1 ? "" : "s"})</summary><pre>${esc(sqlStrict())};</pre></details><details class="sql" style="margin-top:10px"><summary>Ver modelo lógico do banco</summary>${modelHtml()}</details>`;
+    const rule = `<div class="sub">Match = filtros atendidos ÷ filtros ativos. Ordem: maior match, menor taxa de ocupação, maior nível e perfil mais recente.</div><div class="sub" style="margin-top:6px">Nível calculado pelas tarefas concluídas no kanban (GitHub, Trello ou Jira), ponderadas por complexidade.</div><div class="sub" style="margin-top:6px">${esc(PN())} pede: ${D.req.map((r) => `${r.v} vaga${r.v > 1 ? "s" : ""} de ${esc(r.hn)} (${r.nn}+, ${r.h} h/sem)`).join("; ")}.</div>`;
     const occB = `<button class="btn" onclick="A.oc()">${oc ? "Ocultar" : "Ver"} ocupação da equipe (${filled}) →</button>`;
     const occP = oc
-      ? `<div class="card"><div class="between"><b style="font-size:15px">Ocupação da equipe</b><span class="sub">Vagas preenchidas no projeto X: ${filled} de ${total}</span></div>${D.ov
+      ? `<div class="card"><div class="between"><b style="font-size:15px">Ocupação da equipe</b><span class="sub">Vagas preenchidas em ${esc(PN())}: ${filled} de ${total}</span></div>${D.ov
           .map((o) => {
             const r = o.horas_alocadas / o.carga_horaria_semanal;
             return `<div style="margin-top:14px"><div class="between" style="font-size:14px"><span>${esc(o.nome)}</span><span class="sub">${o.horas_alocadas} de ${o.carga_horaria_semanal} h · ${o.horas_livres} h livres</span></div><div class="bar" style="margin-top:6px"><i><b class="${r >= 0.9 ? "w" : ""}" style="width:${Math.min(100, r * 100)}%"></b></i><span>${String(o.taxa_ocupacao_pct).replace(".", ",")}%</span></div>${r >= 0.9 ? '<div class="warn">Atenção: perto do limite de horas</div>' : ""}</div>`;
           })
           .join(
             "",
-          )}<div class="sub" style="margin-top:14px">Fonte: SELECT * FROM vw_ocupacao_aluno;</div></div>`
+          )}</div>`
       : "";
     const ph = `Quem sabe ${F.tech || "tecnologias"}${F.lvl ? " nível " + lvl(F.lvl) : ""} e está livre${F.h ? " " + F.h + " h+" : ""} esta semana?`;
-    return `<div class="sg"><div class="a-head"><h1>Quem você procura?</h1><div class="sub" style="margin-top:6px">Filtre talentos por habilidade, nível e horas livres.</div></div><div class="a-filters">${filtersHtml(ph)}</div><div class="a-res">${resHtml(D)}</div><div class="a-rule">${rule}</div><div class="a-occb">${occB}</div><div class="a-occp">${occP}</div></div>`;
+    return `<div class="sg"><div class="a-head"><h1>Quem você procura?</h1><div class="sub" style="margin-top:6px">Filtre estudantes por habilidade, nível e horas livres.</div></div><div class="a-filters">${filtersHtml(ph)}</div><div class="a-res">${resHtml(D)}</div><div class="a-rule">${rule}</div><div class="a-occb">${occB}</div><div class="a-occp">${occP}</div></div>`;
+  }
+
+  const nomeDe = (em) =>
+    em.split("@")[0].split(/[._-]+/).filter(Boolean).map((w) => w[0].toUpperCase() + w.slice(1)).join(" ") || em;
+  let LM = "in";
+  const ACC = () => {
+    try {
+      return JSON.parse(localStorage.getItem("leds-accounts")) || {};
+    } catch (e) {
+      return {};
+    }
+  };
+  function pLogin() {
+    const up = LM == "up";
+    const tab = (k, t) => `<button type="button" class="lgt${LM == k ? " on" : ""}" onclick="A.lm('${k}')">${t}</button>`;
+    return `<div class="lg"><div class="card lgc"><span class="brand lgb">LEDS</span><div class="lgtabs">${tab("in", "Entrar")}${tab("up", "Cadastrar")}</div><h1>${up ? "Criar conta" : "Entrar"}</h1><div class="sub" style="margin:6px 0 16px">${up ? "Primeira vez no LEDS? Cadastre-se para criar seu perfil." : "Matriz de competências e alocação de desenvolvedores."}</div><form onsubmit="A.login(event)"><div class="fld"><label for="lg-n">Nome completo</label><input id="lg-n" class="q" required autocomplete="name" placeholder="Seu nome"></div><div class="fld" style="margin-top:12px"><label for="lg-e">E-mail</label><input id="lg-e" class="q" type="email" required autocomplete="username" placeholder="voce@ifes.edu.br"></div><div class="fld" style="margin-top:12px"><label for="lg-s">Senha</label><input id="lg-s" class="q" type="password" required minlength="${up ? 6 : 1}" autocomplete="${up ? "new-password" : "current-password"}" placeholder="••••••"></div><fieldset class="lgr"><legend>Você é…</legend><label class="lgo"><input type="radio" name="lg-p" value="Gestor" required><span><b>Gestor</b><small>Gerencia equipes e projetos</small></span></label><label class="lgo"><input type="radio" name="lg-p" value="Estudante" required><span><b>Estudante</b><small>Mostra suas habilidades</small></span></label></fieldset><div id="lg-err" class="warn" hidden style="margin-top:12px"></div><button class="btn p" type="submit" style="width:100%;margin-top:16px">${up ? "Cadastrar" : "Entrar"}</button></form><div class="sub" style="margin-top:14px;text-align:center">${up ? 'Já tem conta? <button type="button" class="plink" onclick="A.lm(\'in\')">Entrar</button>' : 'Primeira vez aqui? <button type="button" class="plink" onclick="A.lm(\'up\')">Cadastre-se</button>'}</div></div></div>`;
+  }
+  function pGestor() {
+    const pj = q("SELECT * FROM projeto WHERE status = 'Ativo' ORDER BY id");
+    const eq = q("SELECT al.projeto_id p, a.nome, a.curso, al.horas_semanais h FROM alocacao al JOIN aluno a ON a.id = al.aluno_id WHERE al.ativa = 1 ORDER BY a.nome");
+    const tot = q("SELECT COUNT(*) n FROM aluno WHERE ativo = 1")[0].n;
+    const cards = pj.map((p) => {
+      const m = eq.filter((x) => x.p == p.id);
+      return `<div class="card rp"><div class="between"><div><b>${esc(p.nome)}</b><div class="sub">${esc(p.descricao || "")}</div></div><span class="sub">${m.length} pessoa(s) · ${m.reduce((s, x) => s + x.h, 0)} h/sem</span></div>${m.length ? `<table class="rt"><thead><tr><th>Pessoa</th><th>Curso</th><th>Horas/sem</th></tr></thead><tbody>${m.map((x) => `<tr><td>${esc(x.nome)}</td><td class="sub">${esc(x.curso || "")}</td><td>${x.h} h</td></tr>`).join("")}</tbody></table>` : '<div class="sub" style="margin-top:10px">Nenhuma pessoa alocada.</div>'}</div>`;
+    }).join("");
+    return `<div class="pg rep"><div class="card"><div class="who"><span class="av">${ini(USR.nome)}</span><div><h1>${esc(USR.nome)}</h1><div class="sub">${esc(USR.email)} · Gestor</div></div></div><div class="between" style="margin-top:14px"><span class="sub">Projetos ativos: <b>${pj.length}</b></span><span class="sub">Estudantes no LEDS: <b>${tot}</b></span></div><button class="btn p" style="margin-top:14px" onclick="A.go('b')">Gerenciar equipe</button> <button class="btn" style="margin-top:14px" onclick="A.go('cf')">Configurações</button></div><h2 style="margin-top:20px">Minhas equipes</h2><div class="rl">${cards || '<div class="card sub">Nenhum projeto ativo.</div>'}</div></div>`;
+  }
+  const lvTag = (l) => `<span class="tag rl${l}">${l} · ${esc(nm(l))}</span>`;
+  function rSearch(ph) {
+    return `<input class="q" style="margin-top:14px" placeholder="${ph}" value="${esc(RQ)}" oninput="A.rq(this.value)" id="rq">`;
+  }
+  function pRepPessoas() {
+    const al = q("SELECT a.id, a.nome, a.email, a.curso, a.carga_horaria_semanal carga, COALESCE(o.horas_livres, a.carga_horaria_semanal) hl FROM aluno a LEFT JOIN vw_ocupacao_aluno o ON o.aluno_id = a.id WHERE a.ativo = 1 ORDER BY a.nome");
+    const sk = q("SELECT k.aluno_id id, h.nome n, h.categoria c, k.nivel l, k.pontos p FROM vw_nivel_kanban k JOIN habilidade h ON h.id = k.habilidade_id ORDER BY k.nivel DESC, h.nome");
+    const t = RQ.trim().toLowerCase();
+    const rows = al
+      .map((a) => ({ ...a, sk: sk.filter((x) => x.id == a.id) }))
+      .filter((a) => !t || [a.nome, a.curso].concat(a.sk.map((x) => x.n)).some((v) => String(v).toLowerCase().includes(t)));
+    const body = rows.length
+      ? rows.map((a) => `<div class="card rp"><div class="between"><div class="who"><span class="av">${ini(a.nome)}</span><div><button class="plink" onclick="A.ver(${a.id})" title="Ver perfil">${esc(a.nome)}</button><div class="sub">${esc(a.curso || "")} · ${a.carga} h/sem · ${a.hl} h livres</div></div></div><span class="sub">${a.sk.length} habilidade(s)</span></div>${a.sk.length ? `<table class="rt"><thead><tr><th>Habilidade</th><th>Categoria</th><th>Nível</th><th>Pontos</th></tr></thead><tbody>${a.sk.map((x) => `<tr><td>${esc(x.n)}</td><td class="sub">${esc(x.c)}</td><td>${lvTag(x.l)}</td><td>${x.p}</td></tr>`).join("")}</tbody></table>` : '<div class="sub" style="margin-top:10px">Sem habilidades registradas.</div>'}</div>`).join("")
+      : '<div class="card sub">Nenhuma pessoa encontrada.</div>';
+    EXP = { n: "relatorio-por-pessoa", h: ["Nome", "E-mail", "Curso", "Carga (h/sem)", "Horas livres", "Habilidade", "Categoria", "Nível", "Pontos"], r: rows.flatMap((a) => (a.sk.length ? a.sk : [null]).map((x) => [a.nome, a.email, a.curso, a.carga, a.hl, x ? x.n : "", x ? x.c : "", x ? x.l + " - " + nm(x.l) : "", x ? x.p : ""])) };
+    return `<div class="pg rep"><div class="between rh"><div><h1>Relatório por pessoa</h1><div class="sub" style="margin-top:6px">Cada pessoa do LEDS com suas habilidades e níveis.</div></div><div class="alrow"><button class="btn p" onclick="A.exp()">Exportar CSV</button><button class="btn" onclick="print()">Imprimir</button></div></div>${rSearch("Buscar por nome, curso ou habilidade…")}<div class="rl">${body}</div></div>`;
+  }
+  function pRepHab() {
+    const hb = HB();
+    const sk = q("SELECT k.habilidade_id h, a.nome n, a.curso c, k.nivel l, k.pontos p FROM vw_nivel_kanban k JOIN aluno a ON a.id = k.aluno_id WHERE a.ativo = 1 ORDER BY k.nivel DESC, k.pontos DESC, a.nome");
+    const t = RQ.trim().toLowerCase();
+    const rows = hb
+      .map((h) => ({ ...h, ps: sk.filter((x) => x.h == h.id) }))
+      .filter((h) => !t || [h.nome, h.categoria].concat(h.ps.map((x) => x.n)).some((v) => String(v).toLowerCase().includes(t)));
+    const body = rows.length
+      ? rows.map((h) => `<div class="card rp"><div class="between"><div><b>${esc(h.nome)}</b><div class="sub">${esc(h.categoria)}</div></div><span class="sub">${h.ps.length} pessoa(s)${h.ps.length ? " · média " + (h.ps.reduce((s, x) => s + x.l, 0) / h.ps.length).toFixed(1) : ""}</span></div>${h.ps.length ? `<table class="rt"><thead><tr><th>Pessoa</th><th>Curso</th><th>Nível</th><th>Pontos</th></tr></thead><tbody>${h.ps.map((x) => `<tr><td>${esc(x.n)}</td><td class="sub">${esc(x.c || "")}</td><td>${lvTag(x.l)}</td><td>${x.p}</td></tr>`).join("")}</tbody></table>` : '<div class="sub" style="margin-top:10px">Ninguém possui essa habilidade ainda.</div>'}</div>`).join("")
+      : '<div class="card sub">Nenhuma habilidade encontrada.</div>';
+    EXP = { n: "relatorio-por-habilidade", h: ["Habilidade", "Categoria", "Pessoa", "Curso", "Nível", "Pontos"], r: rows.flatMap((h) => (h.ps.length ? h.ps : [null]).map((x) => [h.nome, h.categoria, x ? x.n : "", x ? x.c : "", x ? x.l + " - " + nm(x.l) : "", x ? x.p : ""])) };
+    return `<div class="pg rep"><div class="between rh"><div><h1>Relatório por habilidade</h1><div class="sub" style="margin-top:6px">Cada habilidade do catálogo e as pessoas que a possuem.</div></div><div class="alrow"><button class="btn p" onclick="A.exp()">Exportar CSV</button><button class="btn" onclick="print()">Imprimir</button></div></div>${rSearch("Buscar por habilidade, categoria ou pessoa…")}<div class="rl">${body}</div></div>`;
+  }
+  function pHist() {
+    const me = q("SELECT * FROM aluno WHERE id = " + PID)[0];
+    const al = q("SELECT al.*, p.nome pn FROM alocacao al JOIN projeto p ON p.id = al.projeto_id WHERE al.aluno_id = ? ORDER BY al.data_inicio DESC, al.id DESC", [PID]);
+    const tk = q("SELECT t.*, h.nome hn FROM tarefa t JOIN habilidade h ON h.id = t.habilidade_id WHERE t.aluno_id = ? ORDER BY t.data_conclusao, t.id", [PID]);
+    const nv = NV(), acc = {}, ev = [];
+    tk.forEach((t) => {
+      const b = acc[t.habilidade_id] || 0, a = b + t.complexidade;
+      acc[t.habilidade_id] = a;
+      ev.push({ d: t.data_conclusao, k: "t", t: `${esc(t.titulo)} · ${esc(t.hn)}`, s: `${t.fonte} · +${t.complexidade} pts` });
+      LIM.forEach((l, i) => {
+        if (b < l && a >= l) ev.push({ d: t.data_conclusao, k: "n", t: `Subiu para ${nv[i + 1].nome} em ${esc(t.hn)}`, s: `Nível ${i + 2} · ${a} pts acumulados` });
+      });
+    });
+    al.forEach((x) => {
+      ev.push({ d: x.data_inicio, k: "a", t: `Entrou em ${esc(x.pn)}`, s: `${x.horas_semanais} h/sem` });
+      if (x.data_fim) ev.push({ d: x.data_fim, k: "f", t: `Saiu de ${esc(x.pn)}`, s: `${x.horas_semanais} h/sem` });
+    });
+    ev.reverse().sort((a, b) => b.d.localeCompare(a.d));
+    const ic = { t: "✓", n: "★", a: "→", f: "←" };
+    const pts = tk.reduce((s, t) => s + t.complexidade, 0), npj = new Set(al.map((x) => x.projeto_id)).size;
+    const stat = (v, l) => `<div class="card hst"><span class="big">${v}</span><div class="sub">${l}</div></div>`;
+    const alT = al.length
+      ? `<table class="rt"><thead><tr><th>Projeto</th><th>Horas/sem</th><th>Período</th><th>Situação</th></tr></thead><tbody>${al.map((x) => `<tr><td>${esc(x.pn)}</td><td>${x.horas_semanais} h</td><td class="sub">${fd(x.data_inicio)} – ${x.data_fim ? fd(x.data_fim) : "atual"}</td><td>${x.ativa ? '<span class="match">Ativa</span>' : '<span class="sub">Encerrada</span>'}</td></tr>`).join("")}</tbody></table>`
+      : '<div class="sub" style="margin-top:10px">Nenhuma alocação registrada.</div>';
+    const tl = ev.length
+      ? ev.slice(0, 40).map((e) => `<div class="hev"><span class="hic h${e.k}">${ic[e.k]}</span><div style="flex:1"><div class="between"><b style="font-size:14px">${e.t}</b><span class="sub">${fd(e.d)}</span></div><div class="sub">${e.s}</div></div></div>`).join("")
+      : '<div class="sub" style="margin-top:10px">Nenhuma atividade registrada ainda.</div>';
+    const mine = USR.pid == PID;
+    return `<div class="pg rep"><div class="between rh"><div><h1>${mine ? "Meu histórico" : "Histórico de " + esc(me.nome)}</h1><div class="sub" style="margin-top:6px">Alocações, tarefas concluídas e evolução de nível.</div></div><button class="btn" onclick="A.go('p')">Ver perfil</button></div><div class="hsts">${stat(tk.length, "tarefas concluídas")}${stat(pts, "pontos acumulados")}${stat(npj, "projetos")}</div><div class="card"><b style="font-size:15px">Alocações</b>${alT}</div><div class="card"><b style="font-size:15px">Linha do tempo</b>${tl}</div></div>`;
+  }
+  function pConf() {
+    const st = USR.papel == "Estudante", me = st ? q("SELECT * FROM aluno WHERE id = " + USR.pid)[0] : null;
+    const f = (id, l, v, t, x) => `<div class="fld" style="margin-top:12px"><label for="${id}">${l}</label><input id="${id}" class="q" type="${t || "text"}" value="${esc(v || "").replace(/"/g, "&quot;")}" ${x || ""}></div>`;
+    return `<div class="pg rep cfp"><h1>Configurações da conta</h1><div class="sub" style="margin-top:6px">${esc(USR.email)} · ${esc(USR.papel)}</div>
+<div class="card"><b style="font-size:15px">Dados pessoais</b>${f("cf-n", "Nome completo", USR.nome, "text", "required")}${st ? f("cf-c", "Curso", me.curso) + f("cf-h", "Carga horária semanal (h)", me.carga_horaria_semanal, "number", 'min="1" max="40"') : ""}<button class="btn p" style="margin-top:14px" onclick="A.cfd()">Salvar dados</button></div>
+<div class="card"><b style="font-size:15px">Trocar senha</b>${f("cf-a", "Senha atual", "", "password", 'autocomplete="current-password"')}${f("cf-s", "Nova senha", "", "password", 'autocomplete="new-password"')}${f("cf-r", "Confirmar nova senha", "", "password", 'autocomplete="new-password"')}<div id="cf-err" class="warn" hidden style="margin-top:12px"></div><button class="btn p" style="margin-top:14px" onclick="A.cfs()">Alterar senha</button></div>
+<div class="card"><div class="between"><div><b style="font-size:15px">Aparência</b><div class="sub">Tema ${TH == "dark" ? "escuro" : "claro"} ativo</div></div><button class="btn" onclick="A.th()">${TH == "dark" ? "Usar tema claro" : "Usar tema escuro"}</button></div></div>
+<div class="card"><div class="between"><div><b style="font-size:15px">Sessão</b><div class="sub">Encerrar o acesso neste dispositivo</div></div><button class="btn" onclick="A.logout()">Sair da conta</button></div></div></div>`;
   }
   function render() {
     try {
       localStorage.setItem(KU, JSON.stringify({ F, scr, oc }));
     } catch (e) {}
+    if (!USR) {
+      $("nav").innerHTML = "";
+      $("nav").hidden = true;
+      $("app").innerHTML = pLogin();
+      return;
+    }
+    $("nav").hidden = false;
+    const G = USR.papel == "Gestor";
+    const ok = G ? ["g", "b", "rp", "rh", "p", "hi", "cf"] : ["p", "hi", "rp", "rh", "cf"];
+    if (scr != "p" && scr != "hi" && USR.pid) PID = USR.pid;
+    if (!ok.includes(scr)) scr = ok[0];
+    const nb = (k, t) => `<button class="${scr == k ? "on" : ""}" ${scr == k ? 'aria-current="page"' : ""} onclick="A.go('${k}')">${t}</button>`;
     $("nav").innerHTML =
-      `<span class="brand">LEDS</span><button class="${scr == "p" ? "on" : ""}" ${scr == "p" ? 'aria-current="page"' : ""} onclick="A.go('p')">Perfil do talento</button><button class="${scr == "b" ? "on" : ""}" ${scr == "b" ? 'aria-current="page"' : ""} onclick="A.go('b')">Gerenciar equipe</button><span class="usr">Heitor Santos</span><button class="thm" onclick="A.th()">${TH == "dark" ? "Tema claro" : "Tema escuro"}</button>`;
+      `<span class="brand">LEDS</span><span class="links">${G ? nb("g", "Perfil do gestor") + nb("b", "Gerenciar equipe") : nb("p", "Meu perfil") + nb("hi", "Meu histórico")}${nb("rp", "Relatório por pessoa")}${nb("rh", "Relatório por habilidade")}</span><span class="end"><span class="usr">${esc(USR.nome)} · ${esc(USR.papel)}</span><button class="thm" onclick="A.logout()">Sair</button></span>`;
     const D = data();
-    $("app").innerHTML = (scr == "p" ? pProfile(D) : pSearch(D)) + logHtml();
+    $("app").innerHTML =
+      (scr == "g" ? pGestor() : scr == "p" ? pProfile(D) : scr == "b" ? pSearch(D) : scr == "rp" ? pRepPessoas() : scr == "hi" ? pHist() : scr == "cf" ? pConf() : pRepHab()) + logHtml();
   }
   window.A = {
+    lm(m) {
+      LM = m;
+      render();
+    },
+    login(e) {
+      e.preventDefault();
+      const err = (t) => {
+        $("lg-err").textContent = t;
+        $("lg-err").hidden = false;
+      };
+      const no = $("lg-n").value.trim().replace(/\s+/g, " "),
+        em = $("lg-e").value.trim().toLowerCase(),
+        se = $("lg-s").value;
+      const pp = document.querySelector('input[name="lg-p"]:checked');
+      if (!no) return err("Informe seu nome.");
+      if (!pp) return err("Escolha se você é gestor ou estudante.");
+      const acc = ACC();
+      if (LM == "up") {
+        if (acc[em]) return err("Este e-mail já está cadastrado. Use a aba Entrar.");
+        acc[em] = { nome: no, senha: se, papel: pp.value };
+        try {
+          localStorage.setItem("leds-accounts", JSON.stringify(acc));
+        } catch (er) {}
+      } else {
+        const c = acc[em];
+        if (!c) return err("Conta não encontrada. Se é sua primeira vez, cadastre-se.");
+        if (c.senha !== se) return err("Senha incorreta.");
+        if (c.papel !== pp.value) return err("Esta conta está cadastrada como " + c.papel + ".");
+        c.nome = no;
+        try {
+          localStorage.setItem("leds-accounts", JSON.stringify(acc));
+        } catch (er) {}
+      }
+      const st = pp.value == "Estudante";
+      USR = { nome: no, papel: pp.value, email: em };
+      if (st) {
+        let a = q("SELECT id FROM aluno WHERE lower(email) = ?", [em])[0];
+        if (!a) {
+          const n = q("SELECT COALESCE(MAX(id), 0) + 1 AS n FROM aluno")[0].n;
+          ex("INSERT INTO aluno (id, nome, email, curso, carga_horaria_semanal, ativo, data_atualizacao_perfil) VALUES (?, ?, ?, ?, ?, 1, ?)", [n, no, em, "Estudante", 20, today()]);
+          a = { id: n };
+        } else ex("UPDATE aluno SET nome = ? WHERE id = ?", [no, a.id]);
+        USR.pid = a.id;
+        PID = a.id;
+      }
+      try {
+        localStorage.setItem("leds-user", JSON.stringify(USR));
+      } catch (er) {}
+      const novo = LM == "up";
+      LM = "in";
+      scr = st ? "p" : "g";
+      toast((novo ? "Conta criada! " : "") + "Bem-vindo(a), " + no.split(" ")[0]);
+      render();
+    },
+    logout() {
+      USR = null;
+      try {
+        localStorage.removeItem("leds-user");
+      } catch (er) {}
+      render();
+    },
+    rq(v) {
+      RQ = v;
+      render();
+      const i = $("rq");
+      if (i) {
+        i.focus();
+        i.setSelectionRange(v.length, v.length);
+      }
+    },
     hv(v) {
       document.querySelectorAll(".hv").forEach((e) => (e.textContent = v));
     },
     h(v) {
-      ex("UPDATE aluno SET carga_horaria_semanal = ? WHERE id = 1", [+v]);
+      ex("UPDATE aluno SET carga_horaria_semanal = ? WHERE id = ?", [+v, PID]);
       render();
     },
     rm(id) {
       ex(
-        "DELETE FROM aluno_habilidade WHERE aluno_id = 1 AND habilidade_id = ?",
-        [id],
+        "DELETE FROM aluno_habilidade WHERE aluno_id = ? AND habilidade_id = ?",
+        [PID, id],
       );
       toast("Habilidade removida");
       render();
     },
     add(id) {
       ex(
-        "INSERT INTO aluno_habilidade (aluno_id, habilidade_id, nivel) VALUES (1, ?, 1)",
-        [id],
+        "INSERT INTO aluno_habilidade (aluno_id, habilidade_id, nivel) VALUES (?, ?, 1)",
+        [PID, id],
       );
       toast("Habilidade adicionada (nível calculado pelas tarefas)");
       render();
@@ -461,15 +678,16 @@ ORDER BY o.taxa_ocupacao_pct ASC,
         h = +$("kb-h").value,
         c = +$("kb-c").value;
       ex(
-        "INSERT INTO tarefa (id, aluno_id, habilidade_id, fonte, titulo, complexidade, data_conclusao) VALUES (?, 1, ?, ?, ?, ?, ?)",
-        [n, h, f, t, c, today()],
+        "INSERT INTO tarefa (id, aluno_id, habilidade_id, fonte, titulo, complexidade, data_conclusao) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [n, PID, h, f, t, c, today()],
       );
-      toast("Tarefa importada de " + f + ": +" + c + " pts");
+      toast("Tarefa registrada (" + f + ")"+"" + ": +" + c + " pts");
       render();
     },
     save() {
-      ex("UPDATE aluno SET data_atualizacao_perfil = ? WHERE id = 1", [
+      ex("UPDATE aluno SET data_atualizacao_perfil = ? WHERE id = ?", [
         today(),
+        PID,
       ]);
       toast("Perfil salvo");
       render();
@@ -568,8 +786,79 @@ ORDER BY o.taxa_ocupacao_pct ASC,
       oc = !oc;
       render();
     },
+    ver(id) {
+      PID = id;
+      scr = "p";
+      RQ = "";
+      scrollTo(0, 0);
+      render();
+    },
+    hist() {
+      scr = "hi";
+      scrollTo(0, 0);
+      render();
+    },
+    exp() {
+      if (EXP) csv(EXP.h, EXP.r, EXP.n);
+    },
+    kbc() {
+      const u = $("kc-u").value.trim();
+      if (!/^https?:\/\/\S+\.\S+/.test(u)) {
+        toast("Informe o endereço do quadro");
+        $("kc-u").focus();
+        return;
+      }
+      try {
+        localStorage.setItem("leds-kanban-" + PID, JSON.stringify({ f: $("kc-f").value, u }));
+      } catch (e) {}
+      toast("Quadro conectado");
+      render();
+    },
+    kbx() {
+      try {
+        localStorage.removeItem("leds-kanban-" + PID);
+      } catch (e) {}
+      toast("Quadro desconectado");
+      render();
+    },
+    cfd() {
+      const no = $("cf-n").value.trim().replace(/\s+/g, " ");
+      if (!no) return toast("Informe seu nome");
+      const acc = ACC();
+      if (acc[USR.email]) acc[USR.email].nome = no;
+      USR.nome = no;
+      if (USR.pid) {
+        const h = Math.max(1, Math.min(40, +$("cf-h").value || 1));
+        ex("UPDATE aluno SET nome = ?, curso = ?, carga_horaria_semanal = ?, data_atualizacao_perfil = ? WHERE id = ?", [no, $("cf-c").value.trim(), h, today(), USR.pid]);
+      }
+      try {
+        localStorage.setItem("leds-accounts", JSON.stringify(acc));
+        localStorage.setItem("leds-user", JSON.stringify(USR));
+      } catch (e) {}
+      toast("Dados salvos");
+      render();
+    },
+    cfs() {
+      const err = (t) => {
+        $("cf-err").textContent = t;
+        $("cf-err").hidden = false;
+      };
+      const acc = ACC(), c = acc[USR.email];
+      if (!c || c.senha !== $("cf-a").value) return err("Senha atual incorreta.");
+      const n = $("cf-s").value;
+      if (n.length < 6) return err("A nova senha precisa ter pelo menos 6 caracteres.");
+      if (n !== $("cf-r").value) return err("As senhas não coincidem.");
+      c.senha = n;
+      try {
+        localStorage.setItem("leds-accounts", JSON.stringify(acc));
+      } catch (e) {}
+      toast("Senha alterada");
+      render();
+    },
     go(s) {
+      if (USR && USR.pid) PID = USR.pid;
       scr = s;
+      RQ = "";
       PK = null;
       CF = null;
       scrollTo(0, 0);
@@ -587,10 +876,10 @@ ORDER BY o.taxa_ocupacao_pct ASC,
     },
   };
   $("app").innerHTML =
-    '<div class="card sub">Carregando banco de dados SQLite…</div>';
+    '<div class="card sub">Carregando…</div>';
   if (typeof initSqlJs !== "function") {
     $("app").innerHTML =
-      '<div class="card"><b>Não foi possível carregar o SQLite (sql.js).</b><div class="sub" style="margin-top:6px">Verifique sua conexão e recarregue a página.</div></div>';
+      '<div class="card"><b>Não foi possível carregar o aplicativo.</b><div class="sub" style="margin-top:6px">Verifique sua conexão e recarregue a página.</div></div>';
     return;
   }
   initSqlJs()
@@ -606,6 +895,6 @@ ORDER BY o.taxa_ocupacao_pct ASC,
     })
     .catch(() => {
       $("app").innerHTML =
-        '<div class="card"><b>Erro ao iniciar o banco SQLite.</b></div>';
+        '<div class="card"><b>Não foi possível iniciar o aplicativo.</b><div class="sub" style="margin-top:6px">Recarregue a página.</div></div>';
     });
 })();
